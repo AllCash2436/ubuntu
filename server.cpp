@@ -9,74 +9,73 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 
-constexpr int MAX_THREADS = 10;
-constexpr int MAX_BUFFER_SIZE = 1024;
+constexpr int MAX_THR = 10;
+constexpr int MAX_BUF = 1024;
 
-struct ThreadArgs {
-    int clientSocket;
-    const char* savePath;
-    char clientAddress[INET_ADDRSTRLEN]; // Буфер для хранения IP-адреса клиента
+struct Args {
+    int socket;
+    const char* path;
+    char addr[INET_ADDRSTRLEN];
 };
 
-void* handleClient(void* arg) {
-    ThreadArgs* threadArgs = reinterpret_cast<ThreadArgs*>(arg);
+void* handle(void* arg) {
+    Args* args = reinterpret_cast<Args*>(arg);
 
-    char buffer[MAX_BUFFER_SIZE];
-    ssize_t bytesReceived;
+    char buf[MAX_BUF];
+    ssize_t bytes;
 
-    // Получение IP-адреса клиента
-    struct sockaddr_in clientAddr;
-    socklen_t clientAddrLen = sizeof(clientAddr);
-    getpeername(threadArgs->clientSocket, reinterpret_cast<struct sockaddr*>(&clientAddr), &clientAddrLen);
-    inet_ntop(AF_INET, &(clientAddr.sin_addr), threadArgs->clientAddress, INET_ADDRSTRLEN);
+    struct sockaddr_in client;
+    socklen_t len = sizeof(client);
+    getpeername(args->socket, reinterpret_cast<struct sockaddr*>(&client), &len);
+    inet_ntop(AF_INET, &(client.sin_addr), args->addr, INET_ADDRSTRLEN);
 
-    std::cout << "Клиент подключился с IP-адреса: " << threadArgs->clientAddress << std::endl;
+    std::cout << "Client connected from: " << args->addr << std::endl;
 
-    bytesReceived = recv(threadArgs->clientSocket, buffer, MAX_BUFFER_SIZE, 0);
-    if (bytesReceived < 0) {
-        perror("Ошибка при приеме данных");
-        close(threadArgs->clientSocket);
-        delete threadArgs;
+    bytes = recv(args->socket, buf, MAX_BUF, 0);
+    if (bytes < 0) {
+        perror("Error receiving data");
+        close(args->socket);
+        delete args;
         pthread_exit(NULL);
     }
 
-    FILE* file = fopen(threadArgs->savePath, "w");
+    FILE* file = fopen(args->path, "w");
     if (file == nullptr) {
-        perror("Ошибка открытия файла");
-        close(threadArgs->clientSocket);
-        delete threadArgs;
+        perror("Error opening file");
+        close(args->socket);
+        delete args;
         pthread_exit(NULL);
     }
-    size_t bytesWritten = fwrite(buffer, 1, bytesReceived, file);
-    if (bytesWritten != static_cast<size_t>(bytesReceived)) {
-        perror("Ошибка записи в файл");
+    size_t written = fwrite(buf, 1, bytes, file);
+    if (written != static_cast<size_t>(bytes)) {
+        perror("Error writing to file");
         fclose(file);
-        close(threadArgs->clientSocket);
-        delete threadArgs;
+        close(args->socket);
+        delete args;
         pthread_exit(NULL);
     }
     fclose(file);
 
-    if (bytesWritten > 0) {
-        std::cout << "Файл успешно записан: " << threadArgs->savePath << std::endl;
+    if (written > 0) {
+        std::cout << "File written successfully: " << args->path << std::endl;
     } else {
-        std::cout << "Ошибка при записи файла: " << threadArgs->savePath << std::endl;
+        std::cout << "Failed to write file: " << args->path << std::endl;
     }
 
-    close(threadArgs->clientSocket);
-    delete threadArgs;
+    close(args->socket);
+    delete args;
     pthread_exit(NULL);
 }
 
 int main(int argc, char *argv[]) {
     if (argc != 4) {
-        std::cerr << "Использование: " << argv[0] << " <порт> <путь_для_сохранения> <макс_потоков>\n";
+        std::cerr << "Usage: " << argv[0] << " <port> <path> <max_threads>\n";
         return EXIT_FAILURE;
     }
 
     int port = atoi(argv[1]);
-    const char* savePath = argv[2];
-    int maxThreads = atoi(argv[3]);
+    const char* path = argv[2];
+    int max_thr = atoi(argv[3]);
 
     int serverSocket, clientSocket;
     struct sockaddr_in serverAddr, clientAddr;
@@ -84,7 +83,7 @@ int main(int argc, char *argv[]) {
 
     serverSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (serverSocket < 0) {
-        perror("Ошибка создания сокета");
+        perror("Error creating socket");
         return EXIT_FAILURE;
     }
 
@@ -93,28 +92,28 @@ int main(int argc, char *argv[]) {
     serverAddr.sin_port = htons(port);
 
     if (bind(serverSocket, reinterpret_cast<struct sockaddr*>(&serverAddr), sizeof(serverAddr)) < 0) {
-        perror("Ошибка привязки сокета");
+        perror("Error binding socket");
         close(serverSocket);
         return EXIT_FAILURE;
     }
 
     listen(serverSocket, 5);
 
-    pthread_t threads[MAX_THREADS];
-    int threadCount = 0;
+    pthread_t threads[MAX_THR];
+    int count = 0;
 
     while (true) {
         clientSocket = accept(serverSocket, reinterpret_cast<struct sockaddr*>(&clientAddr), &clientLen);
         if (clientSocket < 0) {
-            perror("Ошибка при подключении");
+            perror("Error accepting connection");
             continue;
         }
 
-        ThreadArgs* args = new ThreadArgs;
-        args->clientSocket = clientSocket;
-        args->savePath = savePath;
+        Args* args = new Args;
+        args->socket = clientSocket;
+        args->path = path;
 
-        pthread_create(&threads[threadCount++ % maxThreads], NULL, handleClient, args);
+        pthread_create(&threads[count++ % max_thr], NULL, handle, args);
     }
 
     close(serverSocket);
