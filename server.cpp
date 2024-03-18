@@ -1,98 +1,122 @@
 #include <iostream>
-#include <fstream>
-#include <string>
 #include <cstdlib>
 #include <cstring>
-#include <thread>
-#include <mutex>
+#include <cerrno>
+#include <unistd.h>
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
+#include <pthread.h>
 
-#define PORT 12345 // Порт, который будет прослушиваться сервером
-#define MAX_THREADS 10 // Максимальное количество потоков
+constexpr int MAX_THREADS = 10;
+constexpr int MAX_BUFFER_SIZE = 1024;
 
-std::mutex mtx; // Мьютекс для обеспечения безопасного доступа к файлу
+struct ThreadArgs {
+    int clientSocket;
+    const char* savePath;
+    char clientAddress[INET_ADDRSTRLEN]; // Буфер для хранения IP-адреса клиента
+};
 
-// Функция для обработки соединения с клиентом
-void handleClient(int clientSocket) {
-    char buffer[4096];
-    int bytesRead;
-    std::string fileData;
+void* handleClient(void* arg) {
+    ThreadArgs* threadArgs = reinterpret_cast<ThreadArgs*>(arg);
 
-    // Получение данных от клиента
-    while ((bytesRead = recv(clientSocket, buffer, sizeof(buffer), 0)) > 0) {
-        fileData.append(buffer, bytesRead);
+    char buffer[MAX_BUFFER_SIZE];
+    ssize_t bytesReceived;
+
+    // Получение IP-адреса клиента
+    struct sockaddr_in clientAddr;
+    socklen_t clientAddrLen = sizeof(clientAddr);
+    getpeername(threadArgs->clientSocket, reinterpret_cast<struct sockaddr*>(&clientAddr), &clientAddrLen);
+    inet_ntop(AF_INET, &(clientAddr.sin_addr), threadArgs->clientAddress, INET_ADDRSTRLEN);
+
+    std::cout << "Клиент подключился с IP-адреса: " << threadArgs->clientAddress << std::endl;
+
+    bytesReceived = recv(threadArgs->clientSocket, buffer, MAX_BUFFER_SIZE, 0);
+    if (bytesReceived < 0) {
+        perror("Ошибка при приеме данных");
+        close(threadArgs->clientSocket);
+        delete threadArgs;
+        pthread_exit(NULL);
     }
 
-    // Обработка ошибок при получении данных
-    if (bytesRead < 0) {
-        std::cerr << "Error: Failed to receive data from client\n";
-        close(clientSocket);
-        return;
+    FILE* file = fopen(threadArgs->savePath, "w");
+    if (file == nullptr) {
+        perror("Ошибка открытия файла");
+        close(threadArgs->clientSocket);
+        delete threadArgs;
+        pthread_exit(NULL);
+    }
+    size_t bytesWritten = fwrite(buffer, 1, bytesReceived, file);
+    if (bytesWritten != static_cast<size_t>(bytesReceived)) {
+        perror("Ошибка записи в файл");
+        fclose(file);
+        close(threadArgs->clientSocket);
+        delete threadArgs;
+        pthread_exit(NULL);
+    }
+    fclose(file);
+
+    if (bytesWritten > 0) {
+        std::cout << "Файл успешно записан: " << threadArgs->savePath << std::endl;
+    } else {
+        std::cout << "Ошибка при записи файла: " << threadArgs->savePath << std::endl;
     }
 
-    // Сохранение данных в файл
-    mtx.lock();
-    std::ofstream outfile("received_file.txt", std::ios::binary);
-    if (!outfile) {
-        std::cerr << "Error: Unable to open file for writing\n";
-        mtx.unlock();
-        close(clientSocket);
-        return;
-    }
-    outfile << fileData;
-    outfile.close();
-    mtx.unlock();
-
-    std::cout << "File received and saved successfully\n";
-
-    // Закрытие сокета
-    close(clientSocket);
+    close(threadArgs->clientSocket);
+    delete threadArgs;
+    pthread_exit(NULL);
 }
 
-int main() {
-    // Создание сокета
-    int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
-    if (serverSocket < 0) {
-        std::cerr << "Error: Unable to create socket\n";
-        return 1;
+int main(int argc, char *argv[]) {
+    if (argc != 4) {
+        std::cerr << "Использование: " << argv[0] << " <порт> <путь_для_сохранения> <макс_потоков>\n";
+        return EXIT_FAILURE;
     }
 
-    // Настройка адреса сервера и порта
-    struct sockaddr_in serverAddr;
+    int port = atoi(argv[1]);
+    const char* savePath = argv[2];
+    int maxThreads = atoi(argv[3]);
+
+    int serverSocket, clientSocket;
+    struct sockaddr_in serverAddr, clientAddr;
+    socklen_t clientLen = sizeof(clientAddr);
+
+    serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (serverSocket < 0) {
+        perror("Ошибка создания сокета");
+        return EXIT_FAILURE;
+    }
+
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(PORT);
+    serverAddr.sin_port = htons(port);
 
-    // Привязка сокета к адресу и порту
-    if (bind(serverSocket, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
-        std::cerr << "Error: Bind failed\n";
-        return 1;
+    if (bind(serverSocket, reinterpret_cast<struct sockaddr*>(&serverAddr), sizeof(serverAddr)) < 0) {
+        perror("Ошибка привязки сокета");
+        close(serverSocket);
+        return EXIT_FAILURE;
     }
 
-    // Начало прослушивания входящих соединений
-    if (listen(serverSocket, 5) < 0) {
-        std::cerr << "Error: Listen failed\n";
-        return 1;
-    }
+    listen(serverSocket, 5);
 
-    std::cout << "Server listening on port " << PORT << std::endl;
+    pthread_t threads[MAX_THREADS];
+    int threadCount = 0;
 
-    // Принятие входящих соединений и обработка каждого в отдельном потоке
     while (true) {
-        struct sockaddr_in clientAddr;
-        socklen_t clientLen = sizeof(clientAddr);
-        int clientSocket = accept(serverSocket, (struct sockaddr *)&clientAddr, &clientLen);
+        clientSocket = accept(serverSocket, reinterpret_cast<struct sockaddr*>(&clientAddr), &clientLen);
         if (clientSocket < 0) {
-            std::cerr << "Error: Accept failed\n";
+            perror("Ошибка при подключении");
             continue;
         }
 
-        std::thread(handleClient, clientSocket).detach(); // Создание нового потока для обработки клиента
+        ThreadArgs* args = new ThreadArgs;
+        args->clientSocket = clientSocket;
+        args->savePath = savePath;
+
+        pthread_create(&threads[threadCount++ % maxThreads], NULL, handleClient, args);
     }
 
-    // Закрытие сокета сервера (не достижимо в данном случае, так как сервер бесконечно ждет подключений)
     close(serverSocket);
-
-    return 0;
+    return EXIT_SUCCESS;
 }
