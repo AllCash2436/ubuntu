@@ -17,7 +17,7 @@ sudo cp server /usr/local/bin/
 sudo chmod +x /usr/local/bin/server
 
 # Компиляция и установка клиента
-cd /tmp/client
+cd /tmp/server
 g++ -pthread client.cpp -o client
 sudo cp client /usr/local/bin/
 sudo chmod +x /usr/local/bin/client
@@ -34,7 +34,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/server 50000 '/var/server_files/file_out.txt' 10
+ExecStart=/usr/local/bin/server 12345 '/var/server_files/file_out.txt' 10
 Restart=on-failure
 ExecReload=/bin/kill -HUP $MAINPID   # Обработчик сигнала SIGHUP
 KillSignal=SIGTERM                    # Обработчик сигнала SIGTERM
