@@ -1,63 +1,70 @@
-#include <iostream>
-#include <fstream>
-#include <sstream>
-#include <string>
-#include <cstdlib>
-#include <cstring>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+#include <iostream>      // Ввод-вывод
+#include <cstdlib>       // Преобразование строки в число
+#include <cstring>       // Работа со строками
+#include <cerrno>        // Обработка ошибок через errno
+#include <unistd.h>      // Закрытие файловых дескрипторов
+#include <sys/types.h>   // Типы данных
+#include <sys/socket.h>  // Системные вызовы для работы с сокетами
+#include <netinet/in.h>  // Структуры для представления сетевых адресов
+#include <arpa/inet.h>   // Преобразование IP-адресов
 
-#define PORT 12345 // Порт, который будет использоваться для соединения с сервером
+constexpr int MAX_BUFFER_SIZE = 1024;  // Максимальный размер буфера для чтения файла
 
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " <filename> <server_address>\n";
-        return 1;
+    // Проверяем количество аргументов командной строки
+    if (argc != 4) {
+        std::cerr << "Usage: " << argv[0] << " <server_address> <port> <file_path>\n";
+        return EXIT_FAILURE;
     }
 
-    std::string filename = argv[1];
-    std::string serverAddress = argv[2];
+    // Получаем аргументы командной строки: адрес сервера, порт, путь к файлу
+    const char* serverAddress = argv[1];
+    int port = atoi(argv[2]);
+    const char* filePath = argv[3];
 
-    // Создание сокета
+    // Создаем сокет клиента
     int clientSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (clientSocket < 0) {
-        std::cerr << "Error: Unable to create socket\n";
-        return 1;
+        perror("Error in socket");  // Выводим сообщение об ошибке
+        return EXIT_FAILURE;
     }
 
-    // Задание адреса сервера и порта
+    // Заполняем структуру для адреса сервера
     struct sockaddr_in serverAddr;
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(PORT);
-    inet_pton(AF_INET, serverAddress.c_str(), &serverAddr.sin_addr);
+    serverAddr.sin_port = htons(port);
+    inet_pton(AF_INET, serverAddress, &serverAddr.sin_addr);
 
-    // Установление соединения с сервером
-    if (connect(clientSocket, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
-        std::cerr << "Error: Connection failed\n";
-        return 1;
+    // Устанавливаем соединение с сервером
+    if (connect(clientSocket, reinterpret_cast<struct sockaddr*>(&serverAddr), sizeof(serverAddr)) < 0) {
+        perror("Error in connect");  // Выводим сообщение об ошибке
+        return EXIT_FAILURE;
     }
 
-    // Открытие файла для чтения и отправка его содержимого на сервер
-    std::ifstream file(filename, std::ios::binary);
-    if (!file) {
-        std::cerr << "Error: Unable to open file\n";
-        return 1;
+    // Открываем файл на чтение
+    FILE* file = fopen(filePath, "r");
+    if (file == nullptr) {
+        perror("Error opening file");  // Выводим сообщение об ошибке
+        close(clientSocket);
+        return EXIT_FAILURE;
     }
 
-    std::stringstream fileContent;
-    fileContent << file.rdbuf();
-    std::string data = fileContent.str();
+    // Буфер для чтения данных из файла
+    char buffer[MAX_BUFFER_SIZE];
+    size_t bytesRead;
 
-    if (send(clientSocket, data.c_str(), data.length(), 0) < 0) {
-        std::cerr << "Error: Failed to send file content\n";
-        return 1;
+    // Читаем данные из файла и отправляем их по сокету
+    while ((bytesRead = fread(buffer, 1, MAX_BUFFER_SIZE, file)) > 0) {
+        if (send(clientSocket, buffer, bytesRead, 0) < 0) {
+            perror("Error in send");  // Выводим сообщение об ошибке
+            fclose(file);
+            close(clientSocket);
+            return EXIT_FAILURE;
+        }
     }
 
-    std::cout << "File sent successfully\n";
-
-    // Закрытие сокета
+    // Закрываем файл и сокет
+    fclose(file);
     close(clientSocket);
-
-    return 0;
+    return EXIT_SUCCESS;
 }
