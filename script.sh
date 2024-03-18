@@ -34,7 +34,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/server 12345 '/var/server_files/file_out.txt' 10
+ExecStart=/usr/local/bin/server 50000 '/var/server_files/file_out.txt' 10
 Restart=on-failure
 ExecReload=/bin/kill -HUP $MAINPID   # Обработчик сигнала SIGHUP
 KillSignal=SIGTERM                    # Обработчик сигнала SIGTERM
