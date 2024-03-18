@@ -9,105 +9,121 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 
-constexpr int MAX_CONCURRENCY = 10;
-constexpr int MAX_BUFF_SIZE = 1024;
+constexpr int MAX_THREADS = 10; // Максимальное количество потоков
+constexpr int MAX_BUFFER_SIZE = 1024; // Максимальный размер буфера для данных
 
-struct ClientData {
-    int socket;
-    const char* save_path;
+// Структура для передачи аргументов в функцию потока
+struct ThreadArgs {
+    int clientSocket; // Сокет клиента
+    const char* savePath; // Путь для сохранения данных
 };
 
-void* clientHandler(void* arg) {
-    ClientData* data = reinterpret_cast<ClientData*>(arg);
+// Функция обработки клиента в отдельном потоке
+void* handleClient(void* arg) {
+    ThreadArgs* threadArgs = reinterpret_cast<ThreadArgs*>(arg); // Преобразование аргументов
 
-    char buffer[MAX_BUFF_SIZE];
-    ssize_t bytes_received;
+    char buffer[MAX_BUFFER_SIZE]; // Буфер для данных
+    ssize_t bytesReceived; // Количество принятых байт
 
-    bytes_received = recv(data->socket, buffer, MAX_BUFF_SIZE, 0);
-    if (bytes_received < 0) {
-        perror("Error receiving data");
-        close(data->socket);
-        delete data;
+    // Прием данных от клиента
+    bytesReceived = recv(threadArgs->clientSocket, buffer, MAX_BUFFER_SIZE, 0);
+    if (bytesReceived < 0) { // Проверка на ошибку приема
+        perror("Error in recv");
+        close(threadArgs->clientSocket);
+        delete threadArgs;
         pthread_exit(NULL);
     }
 
-    FILE* file = fopen(data->save_path, "w");
-    if (file == nullptr) {
+    // Сохранение принятых данных в файл
+    FILE* file = fopen(threadArgs->savePath, "w");
+    if (file == nullptr) { // Проверка на ошибку открытия файла
         perror("Error opening file");
-        close(data->socket);
-        delete data;
+        close(threadArgs->clientSocket);
+        delete threadArgs;
         pthread_exit(NULL);
     }
-    size_t bytes_written = fwrite(buffer, 1, bytes_received, file);
-    if (bytes_written != static_cast<size_t>(bytes_received)) {
+    size_t bytesWritten = fwrite(buffer, 1, bytesReceived, file); // Запись данных в файл
+    if (bytesWritten != static_cast<size_t>(bytesReceived)) { // Проверка на ошибку записи
         perror("Error writing to file");
         fclose(file);
-        close(data->socket);
-        delete data;
+        close(threadArgs->clientSocket);
+        delete threadArgs;
         pthread_exit(NULL);
     }
-    fclose(file);
+    fclose(file); // Закрытие файла
 
-    if (bytes_written > 0) {
-        std::cout << "File written successfully: " << data->save_path << std::endl;
+    // Вывод сообщения об успешной записи файла
+    if (bytesWritten > 0) {
+        std::cout << "File successfully written: " << threadArgs->savePath << std::endl;
     } else {
-        std::cout << "Failed to write file: " << data->save_path << std::endl;
+        std::cout << "Failed to write file: " << threadArgs->savePath << std::endl;
     }
 
-    close(data->socket);
-    delete data;
-    pthread_exit(NULL);
+    close(threadArgs->clientSocket); // Закрытие сокета клиента
+    delete threadArgs; // Освобождение памяти для аргументов
+    pthread_exit(NULL); // Выход из потока
 }
 
 int main(int argc, char *argv[]) {
+    // Проверка на количество аргументов командной строки
     if (argc != 4) {
-        std::cerr << "Usage: " << argv[0] << " <port> <save_path> <max_concurrency>\n";
+        std::cerr << "Usage: " << argv[0] << " <port> <save_path> <max_threads>\n";
         return EXIT_FAILURE;
     }
 
-    int port = atoi(argv[1]);
-    const char* save_path = argv[2];
-    int max_concurrency = atoi(argv[3]);
+    // Получение параметров из аргументов командной строки
+    int port = atoi(argv[1]); // Порт
+    const char* savePath = argv[2]; // Путь для сохранения данных
+    int maxThreads = atoi(argv[3]); // Максимальное количество потоков
 
-    int server_socket, client_socket;
-    struct sockaddr_in server_addr, client_addr;
-    socklen_t client_len = sizeof(client_addr);
+    int serverSocket, clientSocket; // Серверный и клиентский сокеты
+    struct sockaddr_in serverAddr, clientAddr; // Структуры адресов сервера и клиента
+    socklen_t clientLen = sizeof(clientAddr); // Размер структуры клиента
 
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket < 0) {
+    // Создание сокета сервера
+    serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (serverSocket < 0) { // Проверка на ошибку создания сокета
         perror("Error creating socket");
         return EXIT_FAILURE;
     }
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(port);
+    // Настройка адреса сервера
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
+    serverAddr.sin_port = htons(port);
 
-    if (bind(server_socket, reinterpret_cast<struct sockaddr*>(&server_addr), sizeof(server_addr)) < 0) {
+    // Привязка сокета к адресу
+    if (bind(serverSocket, reinterpret_cast<struct sockaddr*>(&serverAddr), sizeof(serverAddr)) < 0) {
         perror("Error binding socket");
-        close(server_socket);
+        close(serverSocket);
         return EXIT_FAILURE;
     }
 
-    listen(server_socket, 5);
+    // Прослушивание сокета
+    listen(serverSocket, 5);
 
-    pthread_t threads[MAX_CONCURRENCY];
-    int thread_count = 0;
+    pthread_t threads[MAX_THREADS]; // Массив потоков
+    int threadCount = 0; // Счетчик потоков
 
+    // Бесконечный цикл принятия клиентов
     while (true) {
-        client_socket = accept(server_socket, reinterpret_cast<struct sockaddr*>(&client_addr), &client_len);
-        if (client_socket < 0) {
+        // Принятие соединения от клиента
+        clientSocket = accept(serverSocket, reinterpret_cast<struct sockaddr*>(&clientAddr), &clientLen);
+                // Проверка на ошибку принятия соединения
+        if (clientSocket < 0) {
             perror("Error accepting connection");
-            continue;
+            continue; // Продолжение цикла для ожидания следующего соединения
         }
 
-        ClientData* client_data = new ClientData;
-        client_data->socket = client_socket;
-        client_data->save_path = save_path;
+        // Создание структуры аргументов для потока
+        ThreadArgs* args = new ThreadArgs;
+        args->clientSocket = clientSocket; // Передача клиентского сокета
+        args->savePath = savePath; // Передача пути для сохранения данных
 
-        pthread_create(&threads[thread_count++ % max_concurrency], NULL, clientHandler, client_data);
+        // Создание нового потока для обработки клиента
+        pthread_create(&threads[threadCount++ % maxThreads], NULL, handleClient, args);
     }
 
-    close(server_socket);
-    return EXIT_SUCCESS;
+    close(serverSocket); // Закрытие серверного сокета
+    return EXIT_SUCCESS; // Выход с успехом
 }
